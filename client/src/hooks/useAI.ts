@@ -4,6 +4,7 @@ import {
   KnowledgeEntry,
   Interaction,
   LearningSession,
+  LearningProposal,
 } from '@/lib/aiLearning';
 
 export function useAI() {
@@ -17,6 +18,8 @@ export function useAI() {
     knowledgeCount: 0,
     sessionCount: 0,
   });
+  const [proposals, setProposals] = useState<LearningProposal[]>([]);
+  const [autonomousEnabled, setAutonomousEnabled] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(false);
 
   const engine = getAIEngine();
@@ -27,6 +30,8 @@ export function useAI() {
     setCurrentSession(session || null);
     setKnowledgeBase(engine.getKnowledgeBase());
     setStats(engine.getStats());
+    setProposals(engine.getProposals());
+    setAutonomousEnabled(engine.isAutonomousLearningEnabled());
   }, [sessionId, engine]);
 
   /**
@@ -58,6 +63,8 @@ export function useAI() {
         const session = engine.getSession(sessionId);
         setCurrentSession(session || null);
         setStats(engine.getStats());
+        // atualizar propostas caso o engine gere alguma automaticamente
+        setProposals(engine.getProposals());
         return interaction;
       } finally {
         setIsLoading(false);
@@ -99,6 +106,7 @@ export function useAI() {
       engine.importData(data);
       setKnowledgeBase(engine.getKnowledgeBase());
       setStats(engine.getStats());
+      setProposals(engine.getProposals());
     } finally {
       setIsLoading(false);
     }
@@ -120,6 +128,54 @@ export function useAI() {
         knowledgeCount: 0,
         sessionCount: 0,
       });
+      setProposals([]);
+      setAutonomousEnabled(engine.isAutonomousLearningEnabled());
+    } finally {
+      setIsLoading(false);
+    }
+  }, [engine]);
+
+  /**
+   * Controle para aprendizagem autônoma (ativa apenas se user permitir)
+   */
+  const setAutonomousLearning = useCallback((enabled: boolean) => {
+    setIsLoading(true);
+    try {
+      engine.setAutonomousLearning(enabled);
+      setAutonomousEnabled(engine.isAutonomousLearningEnabled());
+      // opcional: gerar propostas do histórico quando habilitar
+      if (enabled) {
+        engine.generateProposalsFromHistory();
+        setProposals(engine.getProposals());
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [engine]);
+
+  const getProposals = useCallback(() => {
+    return engine.getProposals();
+  }, [engine]);
+
+  const approveProposal = useCallback((proposalId: string) => {
+    setIsLoading(true);
+    try {
+      const entry = engine.approveProposal(proposalId);
+      setKnowledgeBase(engine.getKnowledgeBase());
+      setProposals(engine.getProposals());
+      setStats(engine.getStats());
+      return entry;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [engine]);
+
+  const rejectProposal = useCallback((proposalId: string) => {
+    setIsLoading(true);
+    try {
+      const ok = engine.rejectProposal(proposalId);
+      setProposals(engine.getProposals());
+      return ok;
     } finally {
       setIsLoading(false);
     }
@@ -137,6 +193,13 @@ export function useAI() {
     exportData,
     importData,
     clearAll,
+    // Autonomy & proposals
+    proposals,
+    autonomousEnabled,
+    setAutonomousLearning,
+    getProposals,
+    approveProposal,
+    rejectProposal,
   };
 }
 

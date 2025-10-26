@@ -18,6 +18,14 @@ export interface LearningSession {
   interactions: Interaction[];
 }
 
+export interface LearningProposal {
+  id: string;
+  topic: string;
+  content: string;
+  sourceInteractionId?: string | null;
+  timestamp: number;
+}
+
 export interface Interaction {
   id: string;
   question: string;
@@ -31,6 +39,8 @@ const STORAGE_KEYS = {
   KNOWLEDGE_BASE: 'ai_knowledge_base',
   LEARNING_SESSIONS: 'ai_learning_sessions',
   STATS: 'ai_stats',
+  PROPOSALS: 'ai_learning_proposals',
+  SETTINGS: 'ai_learning_settings',
 };
 
 class AILearningEngine {
@@ -40,6 +50,10 @@ class AILearningEngine {
     totalInteractions: 0,
     totalLearned: 0,
     averageConfidence: 0,
+  };
+  private proposals: Map<string, LearningProposal> = new Map();
+  private settings = {
+    autonomousLearning: false,
   };
 
   constructor() {
@@ -70,6 +84,66 @@ class AILearningEngine {
     this.saveToStorage();
 
     return entry;
+  }
+
+  /**
+   * Retorna se a aprendizagem autônoma está ativada
+   */
+  isAutonomousLearningEnabled(): boolean {
+    return !!this.settings.autonomousLearning;
+  }
+
+  /**
+   * Ativa/Desativa aprendizagem autônoma (configuração armazenada)
+   */
+  setAutonomousLearning(enabled: boolean): void {
+    this.settings.autonomousLearning = !!enabled;
+    this.saveToStorage();
+  }
+
+  /**
+   * Retorna propostas de aprendizagem pendentes
+   */
+  getProposals(): LearningProposal[] {
+    return Array.from(this.proposals.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  /**
+   * Gera uma proposta de aprendizagem -- NÃO adiciona diretamente ao conhecimento.
+   */
+  createProposal(topic: string, content: string, sourceInteractionId?: string | null): LearningProposal {
+    const id = `proposal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const proposal: LearningProposal = {
+      id,
+      topic,
+      content,
+      sourceInteractionId: sourceInteractionId || null,
+      timestamp: Date.now(),
+    };
+    this.proposals.set(id, proposal);
+    this.saveToStorage();
+    return proposal;
+  }
+
+  /**
+   * Aprova uma proposta: converte em conhecimento
+   */
+  approveProposal(proposalId: string): KnowledgeEntry | null {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) return null;
+    const entry = this.addKnowledge(proposal.topic, proposal.content, []);
+    this.proposals.delete(proposalId);
+    this.saveToStorage();
+    return entry;
+  }
+
+  /**
+   * Rejeita/descarta uma proposta
+   */
+  rejectProposal(proposalId: string): boolean {
+    const existed = this.proposals.delete(proposalId);
+    if (existed) this.saveToStorage();
+    return existed;
   }
 
   /**
@@ -119,6 +193,16 @@ class AILearningEngine {
     this.updateAverageConfidence();
     this.saveToStorage();
 
+    // Se aprendizado autônomo está ativado, gerar propostas baseadas em interações fracas
+    try {
+      if (this.isAutonomousLearningEnabled()) {
+        this.maybeGenerateProposalFromInteraction(interaction);
+      }
+    } catch (err) {
+      // não bloquear o fluxo de respostas
+      console.error('Erro ao gerar proposta autônoma:', err);
+    }
+
     return interaction;
   }
 
@@ -155,6 +239,39 @@ class AILearningEngine {
       });
     }
 
+    this.saveToStorage();
+  }
+
+  /**
+   * Analisa uma interação e, se apropriado, cria uma proposta de aprendizagem
+   * Essa proposta só será convertida em conhecimento se o usuário aprovar.
+   */
+  private maybeGenerateProposalFromInteraction(interaction: Interaction) {
+    // Regras simples:
+    // - Se confiança baixa (<=40) ou resposta pedindo para ensinar, sugerir proposta
+    const answerIndicatesLack = /desculpe, ainda não tenho conhecimento suficiente|poderia me ensinar|ensine/i;
+
+    if (interaction.confidence <= 40 || answerIndicatesLack.test(interaction.answer)) {
+      const keywords = this.extractKeywords(interaction.question);
+      const topic = keywords.slice(0, 3).join(' ') || interaction.question.substring(0, 50);
+      const content = `Proposta gerada automaticamente a partir da interação: pergunta="${interaction.question}" resposta="${interaction.answer}"`;
+      this.createProposal(topic, content, interaction.id);
+    }
+  }
+
+  /**
+   * Gera propostas a partir de todo o histórico de sessões (idempotente)
+   */
+  generateProposalsFromHistory(): void {
+    this.sessions.forEach(session => {
+      session.interactions.forEach(interaction => {
+        try {
+          this.maybeGenerateProposalFromInteraction(interaction);
+        } catch (err) {
+          // ignora falhas por item
+        }
+      });
+    });
     this.saveToStorage();
   }
 
@@ -293,6 +410,7 @@ class AILearningEngine {
   importData(data: ReturnType<typeof this.exportData>): void {
     this.knowledgeBase.clear();
     this.sessions.clear();
+    this.proposals.clear();
 
     data.knowledgeBase.forEach(entry => {
       this.knowledgeBase.set(entry.id, entry);
@@ -317,6 +435,7 @@ class AILearningEngine {
       totalLearned: 0,
       averageConfidence: 0,
     };
+    this.proposals.clear();
     this.saveToStorage();
   }
 
@@ -336,6 +455,14 @@ class AILearningEngine {
       localStorage.setItem(
         STORAGE_KEYS.STATS,
         JSON.stringify(this.stats)
+      );
+      localStorage.setItem(
+        STORAGE_KEYS.PROPOSALS,
+        JSON.stringify(Array.from(this.proposals.values()))
+      );
+      localStorage.setItem(
+        STORAGE_KEYS.SETTINGS,
+        JSON.stringify(this.settings)
       );
     } catch (error) {
       console.error('Erro ao salvar dados no localStorage:', error);
@@ -366,6 +493,20 @@ class AILearningEngine {
       const statsData = localStorage.getItem(STORAGE_KEYS.STATS);
       if (statsData) {
         this.stats = JSON.parse(statsData);
+      }
+
+      const proposalsData = localStorage.getItem(STORAGE_KEYS.PROPOSALS);
+      if (proposalsData) {
+        const proposals: LearningProposal[] = JSON.parse(proposalsData);
+        proposals.forEach(p => this.proposals.set(p.id, p));
+      }
+
+      const settingsData = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+      if (settingsData) {
+        try {
+          const s = JSON.parse(settingsData);
+          this.settings = { ...this.settings, ...s };
+        } catch {}
       }
     } catch (error) {
       console.error('Erro ao carregar dados do localStorage:', error);

@@ -6,7 +6,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { useAI } from '@/hooks/useAI';
-import { Send, Plus, Download, Upload, Trash2, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Send, Plus, Download, Upload, Trash2, ThumbsUp, ThumbsDown, Lightbulb, CheckCircle, XCircle } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
 
 export default function Home() {
   const {
@@ -20,6 +21,11 @@ export default function Home() {
     exportData,
     importData,
     clearAll,
+    proposals,
+    autonomousEnabled,
+    setAutonomousLearning,
+    approveProposal,
+    rejectProposal,
   } = useAI();
 
   const [question, setQuestion] = useState('');
@@ -124,6 +130,7 @@ export default function Home() {
             <TabsTrigger value="chat">💬 Chat</TabsTrigger>
             <TabsTrigger value="learn">📚 Ensinar</TabsTrigger>
             <TabsTrigger value="knowledge">🧠 Base de Conhecimento</TabsTrigger>
+            <TabsTrigger value="proposals">💡 Propostas</TabsTrigger>
           </TabsList>
 
           {/* Chat Tab */}
@@ -315,6 +322,53 @@ export default function Home() {
                   </div>
                 )}
               </div>
+            </Card>
+          </TabsContent>
+
+          {/* Proposals Tab */}
+          <TabsContent value="proposals" className="space-y-4">
+            <Card className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold">Propostas de Aprendizado</h2>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="w-4 h-4 text-yellow-500" />
+                    <span className="text-sm text-gray-600">Aprendizado Autônomo</span>
+                  </div>
+                  <Switch
+                    checked={autonomousEnabled}
+                    onCheckedChange={(v) => setAutonomousLearning(Boolean(v))}
+                  />
+                </div>
+              </div>
+
+              {proposals.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">Nenhuma proposta pendente.</div>
+              ) : (
+                <div className="space-y-3">
+                  {proposals.map((p) => (
+                    <div key={p.id} className="border rounded-lg p-4 hover:bg-gray-50">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="font-semibold text-gray-900">{p.topic}</h3>
+                          <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap">{p.content}</p>
+                          {p.sourceInteractionId && (
+                            <p className="text-xs text-gray-400 mt-2">Origem: {p.sourceInteractionId}</p>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-2 ml-4">
+                          <Button size="sm" variant="default" onClick={() => approveProposal(p.id)} className="gap-2">
+                            <CheckCircle className="w-4 h-4" /> Aprovar
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => rejectProposal(p.id)} className="gap-2">
+                            <XCircle className="w-4 h-4" /> Rejeitar
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Card>
           </TabsContent>
         </Tabs>
