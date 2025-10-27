@@ -7,6 +7,10 @@ import { load, CheerioAPI } from 'cheerio';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import robotsParser from 'robots-parser';
+import multer from 'multer';
+// pdf-parse has no bundled types; allow implicit any
+// @ts-ignore
+import pdfParse from 'pdf-parse';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,8 +34,8 @@ async function startServer() {
   app.get('/api/research', async (req, res) => {
     console.log('[research] incoming', req.originalUrl, req.query);
     const topic = String(req.query.topic || '').trim();
-    const maxPages = Math.min(200, Number(req.query.maxPages || 40));
-    const maxTimeSec = Math.min(300, Number(req.query.maxTime || 90));
+  const maxPages = Math.min(200, Number(req.query.maxPages || 40));
+  const maxTimeSec = Math.min(300, Number(req.query.maxTime || 90));
     if (!topic) {
       return res.status(400).json({ error: 'Missing topic parameter' });
     }
@@ -61,12 +65,65 @@ async function startServer() {
     // If not found on Wikipedia, perform a DuckDuckGo search and scrape top results
     try {
       const result = await performWebResearch(topic, { maxPages, maxTimeSec });
-      if (result) return res.json(result);
-      // If nothing found, return empty but 200 so client can handle gracefully
-      return res.json({ topic, summary: '', sources: [], notFound: true });
+      if (result) {
+        return res.json(result);
+      }
+      // performWebResearch returned null (internal non-fatal failure) — return notFound so client can continue
+      console.warn('[research] performWebResearch returned null for topic:', topic);
+      return res.json({ topic, summary: '', sources: [], notFound: true, error: 'internal' });
     } catch (err) {
-      console.error('research error:', err);
-      return res.status(500).json({ error: 'Internal research error' });
+  console.error('research error (unhandled):', (err as any)?.stack || err);
+      // Return a non-500 response to the client with an error marker so UI can handle gracefully
+      return res.json({ topic, summary: '', sources: [], notFound: true, error: 'internal_exception' });
+    }
+  });
+
+  // serve empty favicon to avoid noisy 404s in browser console
+  app.get('/favicon.ico', (_req, res) => {
+    res.status(204).end();
+  });
+
+  // file upload endpoint (for books / PDFs / txt)
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+  app.post('/api/upload', upload.single('file'), async (req, res) => {
+    try {
+      const file = (req as any).file;
+      if (!file) return res.status(400).json({ error: 'no_file' });
+      const name = file.originalname || 'upload';
+      const lower = name.toLowerCase();
+      if (lower.endsWith('.pdf')) {
+        try {
+          const parsed: any = await (pdfParse as any)(file.buffer);
+          const text: string = parsed?.text || '';
+          const paras = text.split(/\n\s*\n/).map((p: string) => p.trim()).filter(Boolean);
+          const fragments = paras.map((p: string) => ({ text: (p as string).substring(0, 5000), code: [] })).slice(0, 200);
+          const summary = fragments.slice(0, 8).map((f: any) => f.text).join('\n\n---\n\n');
+          return res.json({ topic: name, summary, fragments, sources: [`upload:${name}`] });
+        } catch (e) {
+          console.error('pdf parse error', e);
+          return res.status(500).json({ error: 'pdf_parse_failed' });
+        }
+      } else {
+        // treat as text-like file
+        const txt = file.buffer.toString('utf8');
+        // try JSON import (knowledge export) if it looks like JSON
+        const trimmed = txt.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          try {
+            const data = JSON.parse(trimmed);
+            return res.json({ imported: true, data });
+          } catch (e) {
+            // fallthrough to plain text
+          }
+        }
+  const paras = txt.split(/\n\s*\n/).map((p: string) => p.trim()).filter(Boolean);
+  const fragments = paras.map((p: string) => ({ text: p.substring(0, 5000), code: [] })).slice(0, 200);
+        const summary = fragments.slice(0, 8).map((f: any) => f.text).join('\n\n---\n\n');
+        return res.json({ topic: name, summary, fragments, sources: [`upload:${name}`] });
+      }
+    } catch (err) {
+      console.error('upload handler error', (err as any)?.stack || err);
+      return res.status(500).json({ error: 'upload_failed' });
     }
   });
 
@@ -76,60 +133,82 @@ async function startServer() {
   const lastRequestByIp = new Map();
 
   async function performWebResearch(topic: string, opts: { maxPages?: number; maxTimeSec?: number } = {}) {
-    const now = Date.now();
-    // cache
-    const cached = researchCache.get(topic.toLowerCase());
-    if (cached && now - cached.ts < CACHE_TTL) {
-      return { topic, summary: cached.summary, sources: cached.sources };
-    }
-    // deep crawling strategy: perform multiple targeted site-specific searches and then BFS crawl
-  const maxPages = opts.maxPages || 80;
-  const maxTimeMs = (opts.maxTimeSec || 120) * 1000;
-    const startTime = Date.now();
+    try {
+      const now = Date.now();
+      // cache
+      const cached = researchCache.get(topic.toLowerCase());
+      if (cached && now - cached.ts < CACHE_TTL) {
+        return { topic, summary: cached.summary, sources: cached.sources };
+      }
+      // deep crawling strategy: perform multiple targeted site-specific searches and then BFS crawl
+      const maxPages = opts.maxPages || 80;
+      const maxTimeMs = (opts.maxTimeSec || 120) * 1000;
+      const startTime = Date.now();
 
     const headers = { 'User-Agent': 'Mozilla/5.0 (compatible; IAmyBot/1.0; +https://example.local)' };
 
-    // helper to perform a DuckDuckGo HTML search for a query
-    async function ddgSearch(q: string) {
-      try {
-        const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
-        const r = await axios.get(ddgUrl, { headers, timeout: 10000 });
-        const $: CheerioAPI = load(r.data);
-        const out: string[] = [];
-        $('a[href^="http"]').each((_: number, el: any) => {
-          const href = $(el).attr('href');
-          if (href && href.startsWith('http') && !href.includes('duckduckgo.com')) out.push(href);
-        });
-        return Array.from(new Set(out));
-      } catch (err) {
-        return [];
-      }
-    }
-
-    // fallback: Bing HTML search parser
-    async function bingSearch(q: string) {
-      try {
-        const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
-        const r = await axios.get(bingUrl, { headers, timeout: 10000 });
-        const $: CheerioAPI = load(r.data);
-        const out: string[] = [];
-        // common pattern: results under li.b_algo a
-        $('li.b_algo a').each((_: number, el: any) => {
-          const href = $(el).attr('href');
-          if (href && href.startsWith('http')) out.push(href);
-        });
-        // fallback: any external anchors
-        if (out.length === 0) {
-          $('a[href^="http"]').each((_: number, el: any) => {
+      // helper: generic HTML searchers for multiple providers (DuckDuckGo, Bing, Startpage)
+  const ddgSearch = async (q: string) => {
+        try {
+          const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+          const r = await axios.get(ddgUrl, { headers, timeout: 10000 });
+          const $: CheerioAPI = load(r.data);
+          const out: string[] = [];
+          $('a.result__a').each((_: number, el: any) => {
             const href = $(el).attr('href');
-            if (href && href.startsWith('http') && !href.includes('bing.com')) out.push(href);
+            if (href && href.startsWith('http')) out.push(href);
           });
+          if (out.length === 0) {
+            $('a').each((_: number, el: any) => {
+              const href = $(el).attr('href');
+              if (href && href.startsWith('http')) out.push(href);
+            });
+          }
+          return out;
+        } catch (err) {
+          return [];
         }
-        return Array.from(new Set(out));
-      } catch (err) {
-        return [];
       }
-    }
+
+  const bingSearch = async (q: string) => {
+        try {
+          const url = `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
+          const r = await axios.get(url, { headers, timeout: 10000 });
+          const $: CheerioAPI = load(r.data);
+          const out: string[] = [];
+          $('li.b_algo h2 a').each((_: number, el: any) => {
+            const href = $(el).attr('href');
+            if (href && href.startsWith('http')) out.push(href);
+          });
+          if (out.length === 0) {
+            $('a').each((_: number, el: any) => {
+              const href = $(el).attr('href');
+              if (href && href.startsWith('http')) out.push(href);
+            });
+          }
+          return out;
+        } catch (err) {
+          return [];
+        }
+      }
+
+  const startpageSearch = async (q: string) => {
+        try {
+          const url = `https://www.startpage.com/sp/search?q=${encodeURIComponent(q)}`;
+          const r = await axios.get(url, { headers, timeout: 10000 });
+          const $: CheerioAPI = load(r.data);
+          const out: string[] = [];
+          $('a.w-gl, a').each((_: number, el: any) => {
+            const href = $(el).attr('href');
+            if (href && href.startsWith('http')) out.push(href);
+          });
+          return out;
+        } catch (err) {
+          return [];
+        }
+      }
+
+      
 
     // priority domains to prefer (expanded)
     const priorityDomains = [
@@ -171,17 +250,25 @@ async function startServer() {
     const siteQueries = priorityDomains.flatMap(d => [`site:${d} ${qBase}`, `site:${d} ${qBase} example`, `site:${d} ${qBase} error`]);
     const queries = [...variations, ...siteQueries];
 
-    // run searches in parallel batches to increase coverage quickly but politely
+    // run searches in parallel batches across multiple providers to increase coverage quickly but politely
     const batchSize = 6;
+
+    // providers to call in batches
+    const providers = [ddgSearch, bingSearch, startpageSearch];
     for (let i = 0; i < queries.length && seeds.size < Math.min(240, maxPages * 6); i += batchSize) {
       const batch = queries.slice(i, i + batchSize);
       try {
-        const results = await Promise.allSettled(batch.map(q => ddgSearch(q)));
+        // for each query in the batch, call all providers in parallel
+        const work = batch.flatMap(q => providers.map(p => p(q)));
+        const results = await Promise.allSettled(work);
         for (const r of results) {
-          if (r.status === 'fulfilled') {
+          if (r.status === 'fulfilled' && Array.isArray(r.value)) {
             for (const u of r.value) {
               if (seeds.size >= Math.min(240, maxPages * 6)) break;
-              seeds.add(u);
+              // simple filter: skip internal duckduckgo/startpage redirect URLs
+              if (typeof u === 'string' && u.startsWith('http') && !u.includes('duckduckgo.com') && !u.includes('startpage.com')) {
+                seeds.add(u);
+              }
             }
           }
         }
@@ -189,7 +276,7 @@ async function startServer() {
         // ignore batch errors and continue
       }
       // small pause between batches
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 250));
     }
 
     // fallback: if seeds are still empty, run a plain ddgSearch on topic
@@ -304,11 +391,16 @@ async function startServer() {
       await new Promise((r) => setTimeout(r, 120));
     }
 
-    // compose a simple summary from fragments' text
-    const summary = fragments.map(f => f.text).slice(0, 8).join('\n\n---\n\n');
-    const result = { topic, summary: summary || '', sources, fragments };
-    researchCache.set(topic.toLowerCase(), { ...result, ts: Date.now() });
-    return result;
+      // compose a simple summary from fragments' text
+      const summary = fragments.map(f => f.text).slice(0, 8).join('\n\n---\n\n');
+      const result = { topic, summary: summary || '', sources, fragments };
+      researchCache.set(topic.toLowerCase(), { ...result, ts: Date.now() });
+      return result;
+    } catch (err) {
+      console.error('performWebResearch fatal error:', (err as any)?.stack || err);
+      // don't throw — return null so caller can handle gracefully and avoid 500 when possible
+      return null as any;
+    }
   }
 
     // Handle client-side routing - serve index.html for all other routes

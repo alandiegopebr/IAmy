@@ -20,6 +20,7 @@ export function useAI() {
   });
   const [proposals, setProposals] = useState<LearningProposal[]>([]);
   const [autonomousEnabled, setAutonomousEnabled] = useState<boolean>(false);
+  // nota: suporte a provedores externos sem chave (SerpAPI) removido — usa apenas buscas HTML e crawl
   const [isLoading, setIsLoading] = useState(false);
 
   const engine = getAIEngine();
@@ -106,12 +107,20 @@ export function useAI() {
     setIsLoading(true);
     try {
       if (!topic || !topic.trim()) throw new Error('Topic required');
-      const resp = await fetch(`/api/research?topic=${encodeURIComponent(topic)}${options.deep ? '&deep=1' : ''}`);
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err?.error || 'Research failed');
+      let data: any = null;
+      try {
+        const resp = await fetch(`/api/research?topic=${encodeURIComponent(topic)}${options.deep ? '&deep=1' : ''}`);
+        if (!resp.ok) {
+          // try to read body for debugging
+          const err = await resp.json().catch(() => ({}));
+          console.error('research fetch non-ok', err);
+          return { approved: false, notFound: true, error: 'server_non_ok', details: err };
+        }
+        data = await resp.json();
+      } catch (fetchErr) {
+        console.error('research fetch error:', fetchErr);
+        return { approved: false, notFound: true, error: 'network' };
       }
-      const data = await resp.json();
       const summary = data.summary || '';
       const title = data.topic || topic;
 
@@ -276,6 +285,7 @@ export function useAI() {
     approveProposal,
     rejectProposal,
     researchTopic,
+    
     searchKnowledge,
   };
 }

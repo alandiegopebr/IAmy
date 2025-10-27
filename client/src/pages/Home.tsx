@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -26,9 +26,11 @@ export default function Home() {
     setAutonomousLearning,
     approveProposal,
     rejectProposal,
-    researchTopic,
-    searchKnowledge,
+  researchTopic,
+  searchKnowledge,
   } = useAI();
+  
+
 
   const [question, setQuestion] = useState('');
   const [topic, setTopic] = useState('');
@@ -38,6 +40,14 @@ export default function Home() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<any>(null);
   const [previewSelected, setPreviewSelected] = useState<Record<number, boolean>>({});
+  // ensure previewSelected defaults to selecting all fragments when previewData is set
+  useEffect(() => {
+    if (previewData && Object.keys(previewSelected || {}).length === 0) {
+      const sel: Record<number, boolean> = {};
+      (previewData.fragments || []).forEach((_: any, i: number) => sel[i] = true);
+      setPreviewSelected(sel);
+    }
+  }, [previewData]);
   const [troubleshootInput, setTroubleshootInput] = useState('');
   const [troubleshootResults, setTroubleshootResults] = useState<any[]>([]);
 
@@ -143,6 +153,7 @@ export default function Home() {
               <h1 className="text-3xl font-bold text-gray-900">🤖 IA com Aprendizado Incremental</h1>
               <p className="text-gray-600 mt-1">Uma IA que aprende com o tempo e armazena conhecimento localmente</p>
             </div>
+            {/* Nota: pesquisas usam provedores sem chave por padrão (DuckDuckGo/Bing/Startpage). */}
           </div>
         </div>
       </div>
@@ -172,7 +183,8 @@ export default function Home() {
             <TabsTrigger value="learn">📚 Ensinar</TabsTrigger>
             <TabsTrigger value="knowledge">🧠 Base de Conhecimento</TabsTrigger>
             <TabsTrigger value="proposals">💡 Propostas</TabsTrigger>
-            <TabsTrigger value="troubleshoot">🛠️ Troubleshoot</TabsTrigger>
+              <TabsTrigger value="attachments">📎 Anexos</TabsTrigger>
+              <TabsTrigger value="troubleshoot">🛠️ Troubleshoot</TabsTrigger>
           </TabsList>
 
           {/* Chat Tab (mantém interface de conversa, mas envia para interpretação automática antes de gerar resposta) */}
@@ -229,7 +241,12 @@ export default function Home() {
                     placeholder="Faça uma pergunta à IA..."
                     value={question}
                     onChange={(e) => setQuestion(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleChatSend()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleChatSend();
+                      }
+                    }}
                     disabled={isLoading}
                   />
                   <Button
@@ -240,6 +257,85 @@ export default function Home() {
                     <Send className="w-4 h-4" />
                     Enviar
                   </Button>
+                </div>
+              </div>
+            </Card>
+          </TabsContent>
+
+          {/* Attachments / Uploads Tab */}
+          <TabsContent value="attachments" className="space-y-4">
+            <Card className="p-6">
+              <h2 className="text-xl font-semibold mb-4">Anexar Arquivos / Livros</h2>
+              <div className="space-y-4">
+                <p className="text-sm text-gray-600">Envie arquivos de texto ou PDF para que a IA aprenda a partir do conteúdo. Arquivos .txt, .md e .json são processados no cliente; PDFs serão enviados ao servidor para extração de texto.</p>
+                <div className="flex flex-col gap-2">
+                  <input
+                    type="file"
+                    accept=".txt,.md,.pdf,.json"
+                    multiple
+                    onChange={async (e) => {
+                      const files = e.target.files;
+                      if (!files || files.length === 0) return;
+                      try {
+                        for (let i = 0; i < files.length; i++) {
+                          const f = files[i];
+                          const name = f.name.toLowerCase();
+                          if (name.endsWith('.txt') || name.endsWith('.md')) {
+                            const text = await f.text();
+                            const paras = text.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean).slice(0,200);
+                            const fragments = paras.map(p => ({ text: p.substring(0,5000), code: [] }));
+                            const preview = { topic: f.name, summary: fragments.slice(0,8).map((x:any)=>x.text).join('\n\n---\n\n'), fragments, sources: [`local:${f.name}`] };
+                            setPreviewData(preview);
+                            const sel: Record<number, boolean> = {};
+                            (preview.fragments || []).forEach((_: any, idx: number) => sel[idx] = true);
+                            setPreviewSelected(sel);
+                            setPreviewOpen(true);
+                          } else if (name.endsWith('.json')) {
+                            // try to parse JSON as an exported knowledge bundle
+                            const txt = await f.text();
+                            try {
+                              const data = JSON.parse(txt);
+                              importData(data);
+                              alert(`Arquivo ${f.name} importado para a base de conhecimento.`);
+                            } catch (err) {
+                              alert(`Arquivo JSON inválido: ${f.name}`);
+                            }
+                          } else if (name.endsWith('.pdf')) {
+                            // upload to server for parsing
+                            const fd = new FormData();
+                            fd.append('file', f);
+                            const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+                            if (!resp.ok) {
+                              const err = await resp.json().catch(() => ({}));
+                              console.error('upload error', err);
+                              alert(`Falha ao enviar ${f.name} ao servidor.`);
+                              continue;
+                            }
+                            const body = await resp.json();
+                            if (body && body.imported && body.data) {
+                              importData(body.data);
+                              alert(`Arquivo ${f.name} importado como base de conhecimento.`);
+                            } else if (body && body.fragments) {
+                              setPreviewData(body);
+                              const sel: Record<number, boolean> = {};
+                              (body.fragments || []).forEach((_: any, idx: number) => sel[idx] = true);
+                              setPreviewSelected(sel);
+                              setPreviewOpen(true);
+                            } else {
+                              alert(`Arquivo ${f.name} processado, mas sem conteúdo extraível.`);
+                            }
+                          } else {
+                            alert(`Formato não suportado: ${f.name}`);
+                          }
+                        }
+                      } catch (err) {
+                        console.error('file upload/parse error', err);
+                        alert('Erro ao processar arquivos. Veja o console para detalhes.');
+                      }
+                      // reset input value so same file can be selected again if needed
+                      (e.target as HTMLInputElement).value = '';
+                    }}
+                  />
                 </div>
               </div>
             </Card>
@@ -290,15 +386,20 @@ export default function Home() {
                 <Button
                   onClick={async () => {
                     if (!topic.trim()) return alert('Informe um tópico para pesquisar');
-                    const res = await researchTopic(topic, true);
-                    if (res && res.approved && res.entry) {
-                      alert(`Aprendido: ${res.entry.topic}`);
-                      setTopic('');
-                      setContent('');
-                    } else if (res && res.notFound) {
-                      alert('Nenhum resultado encontrado na web para esse tópico. Tente outro termo.');
-                    } else if (res && !res.approved) {
-                      alert('Proposta criada (revisar em Propostas)');
+                    try {
+                      const res = await researchTopic(topic, true);
+                      if (res && res.approved && res.entry) {
+                        alert(`Aprendido: ${res.entry.topic}`);
+                        setTopic('');
+                        setContent('');
+                      } else if (res && res.notFound) {
+                        alert('Nenhum resultado encontrado na web para esse tópico. Tente outro termo.');
+                      } else if (res && !res.approved) {
+                        alert('Proposta criada (revisar em Propostas)');
+                      }
+                    } catch (err: any) {
+                      console.error('Erro ao pesquisar (tratado):', err);
+                      alert('Erro ao pesquisar. Verifique o servidor ou veja o console para detalhes.');
                     }
                   }}
                   disabled={isLoading || !topic.trim()}
@@ -356,7 +457,7 @@ export default function Home() {
               <div className="absolute inset-0 bg-black opacity-40" onClick={() => setPreviewOpen(false)} />
               <div className="bg-white rounded-lg shadow-lg max-w-4xl w-full max-h-[80vh] overflow-auto p-6 z-10">
                 <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-semibold">Pré-visualizar fontes — {previewData.topic}</h3>
+                  <h3 className="text-lg font-semibold">Pré-visualizar fontes — {previewData.topic} {Object.keys(previewSelected || {}).length > 0 ? `(${Object.values(previewSelected).filter(Boolean).length} selecionados)` : ''}</h3>
                   <div className="flex gap-2">
                     <Button size="sm" variant="outline" onClick={() => setPreviewOpen(false)}>Fechar</Button>
                   </div>
@@ -398,7 +499,7 @@ export default function Home() {
                 </div>
                 <div className="mt-4 flex justify-end gap-2">
                   <Button variant="outline" onClick={() => setPreviewOpen(false)}>Cancelar</Button>
-                  <Button onClick={async () => {
+                  <Button disabled={!Object.values(previewSelected || {}).some(Boolean)} onClick={async () => {
                     // import selected fragments
                     const frags = previewData.fragments || [];
                     const sources = previewData.sources || [];
@@ -413,10 +514,17 @@ export default function Home() {
                         : '';
                       const combined = (fragText || '') + codeSection;
                       const src = sources[i] || null;
-                      const topicTitle = src ? `${previewData.topic} — fonte ${new URL(src).host}` : previewData.topic;
+                      // obter host de forma segura (URLs relativas/faltantes podem lançar)
+                      let hostForTitle = '';
+                      try {
+                        hostForTitle = src ? (new URL(src).host || String(src)) : '';
+                      } catch (e) {
+                        hostForTitle = src || 'desconhecida';
+                      }
+                      const topicTitle = src ? `${previewData.topic} — fonte ${hostForTitle}` : previewData.topic;
                       // include language tags when available
                       const codeLangs = codes.map(c => c.lang).filter(Boolean) as string[];
-                      const tags = src ? [new URL(src).host, ...codeLangs] : [...codeLangs];
+                      const tags = src ? [hostForTitle, ...codeLangs] : [...codeLangs];
                       try {
                         addKnowledge(topicTitle, combined, tags);
                         added++;
