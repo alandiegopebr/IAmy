@@ -59,11 +59,12 @@ async function startServer() {
     try {
       const result = await performWebResearch(topic);
       if (result) return res.json(result);
+      // If nothing found, return empty but 200 so client can handle gracefully
+      return res.json({ topic, summary: '', sources: [], notFound: true });
     } catch (err) {
       console.error('research error:', err);
+      return res.status(500).json({ error: 'Internal research error' });
     }
-
-    return res.status(404).json({ error: 'No summary found for topic' });
   });
 
   // Simple in-memory cache and rate limiter
