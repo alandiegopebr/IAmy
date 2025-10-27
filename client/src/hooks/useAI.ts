@@ -98,6 +98,37 @@ export function useAI() {
   }, [engine]);
 
   /**
+   * Pesquisa na web (servidor) e aprende automaticamente caso autoApprove seja true.
+   */
+  const researchTopic = useCallback(async (topic: string, autoApprove = false) => {
+    setIsLoading(true);
+    try {
+      if (!topic || !topic.trim()) throw new Error('Topic required');
+      const resp = await fetch(`/api/research?topic=${encodeURIComponent(topic)}`);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err?.error || 'Research failed');
+      }
+      const data = await resp.json();
+      const summary = data.summary || '';
+      const title = data.topic || topic;
+
+      if (autoApprove) {
+        const entry = engine.addKnowledge(title, summary, []);
+        setKnowledgeBase(engine.getKnowledgeBase());
+        setStats(engine.getStats());
+        return { approved: true, entry };
+      } else {
+        const proposal = engine.createProposal(title, summary, null);
+        setProposals(engine.getProposals());
+        return { approved: false, proposal };
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [engine]);
+
+  /**
    * Importa dados
    */
   const importData = useCallback((data: ReturnType<typeof engine.exportData>) => {
@@ -200,6 +231,7 @@ export function useAI() {
     getProposals,
     approveProposal,
     rejectProposal,
+    researchTopic,
   };
 }
 

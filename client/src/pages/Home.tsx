@@ -26,6 +26,7 @@ export default function Home() {
     setAutonomousLearning,
     approveProposal,
     rejectProposal,
+    researchTopic,
   } = useAI();
 
   const [question, setQuestion] = useState('');
@@ -243,6 +244,26 @@ export default function Home() {
                 >
                   <Plus className="w-4 h-4" />
                   Adicionar Conhecimento
+                </Button>
+
+                <Button
+                  onClick={async () => {
+                    if (!topic.trim()) return alert('Informe um tópico para pesquisar');
+                    const res = await researchTopic(topic, true);
+                    if (res && res.approved) {
+                      alert(`Aprendido: ${res.entry.topic}`);
+                      setTopic('');
+                      setContent('');
+                    } else if (res && !res.approved) {
+                      alert('Proposta criada (revisar em Propostas)');
+                    }
+                  }}
+                  disabled={isLoading || !topic.trim()}
+                  className="w-full gap-2 mt-2"
+                  variant="outline"
+                >
+                  <Lightbulb className="w-4 h-4" />
+                  Pesquisar e Aprender (web)
                 </Button>
               </div>
             </Card>
