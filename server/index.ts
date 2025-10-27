@@ -3,7 +3,7 @@ import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import axios from 'axios';
-import cheerio from 'cheerio';
+import { load, CheerioAPI } from 'cheerio';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import robotsParser from 'robots-parser';
@@ -23,12 +23,8 @@ async function startServer() {
 
   app.use(express.static(staticPath));
 
-  // Handle client-side routing - serve index.html for all routes
-  app.get("*", (_req, res) => {
-    res.sendFile(path.join(staticPath, "index.html"));
-  });
 
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT || 4000;
 
   // Simple research endpoint that fetches a summary from Wikipedia (pt -> en fallback)
   app.get('/api/research', async (req, res) => {
@@ -84,19 +80,19 @@ async function startServer() {
     }
 
     // 1) DuckDuckGo HTML search to get top links
-    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(topic)}`;
-    const headers = { 'User-Agent': 'Mozilla/5.0 (compatible; IAmyBot/1.0; +https://example.local)' };
-    const searchResp = await axios.get(ddgUrl, { headers, timeout: 8000 });
-    const $ = cheerio.load(searchResp.data);
+  const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(topic)}`;
+  const headers = { 'User-Agent': 'Mozilla/5.0 (compatible; IAmyBot/1.0; +https://example.local)' };
+  const searchResp = await axios.get(ddgUrl, { headers, timeout: 8000 });
+  const $: CheerioAPI = load(searchResp.data);
     // DuckDuckGo HTML structure: results in a tags with class 'result__a' or just .result__a
     const links: string[] = [];
-    $('a.result__a').each((_, el) => {
+    $('a.result__a').each((_: number, el: any) => {
       const href = $(el).attr('href');
       if (href && href.startsWith('http')) links.push(href);
     });
     // fallback: collect first regular links
     if (links.length === 0) {
-      $('a').each((_, el) => {
+      $('a').each((_: number, el: any) => {
         const href = $(el).attr('href');
         if (href && href.startsWith('http')) links.push(href);
       });
@@ -147,9 +143,14 @@ async function startServer() {
     return result;
   }
 
-  server.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}/`);
-  });
+    // Handle client-side routing - serve index.html for all other routes
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(staticPath, "index.html"));
+    });
+
+    server.listen(port, () => {
+      console.log(`Server running on http://localhost:${port}/`);
+    });
 }
 
 startServer().catch(console.error);

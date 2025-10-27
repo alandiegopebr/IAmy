@@ -250,7 +250,7 @@ export default function Home() {
                   onClick={async () => {
                     if (!topic.trim()) return alert('Informe um tópico para pesquisar');
                     const res = await researchTopic(topic, true);
-                    if (res && res.approved) {
+                    if (res && res.approved && res.entry) {
                       alert(`Aprendido: ${res.entry.topic}`);
                       setTopic('');
                       setContent('');
