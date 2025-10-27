@@ -100,11 +100,13 @@ export function useAI() {
   /**
    * Pesquisa na web (servidor) e aprende automaticamente caso autoApprove seja true.
    */
-  const researchTopic = useCallback(async (topic: string, autoApprove = false) => {
+  type ResearchOptions = { deep?: boolean };
+
+  const researchTopic = useCallback(async (topic: string, autoApprove = false, options: ResearchOptions = {}) => {
     setIsLoading(true);
     try {
       if (!topic || !topic.trim()) throw new Error('Topic required');
-      const resp = await fetch(`/api/research?topic=${encodeURIComponent(topic)}`);
+      const resp = await fetch(`/api/research?topic=${encodeURIComponent(topic)}${options.deep ? '&deep=1' : ''}`);
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err?.error || 'Research failed');
@@ -118,12 +120,40 @@ export function useAI() {
         return { approved: false, notFound: true, data };
       }
 
-      if (autoApprove) {
+  if (autoApprove) {
+        // If deep research returned fragments, create multiple knowledge entries (one per fragment)
+        if (Array.isArray(data.fragments) && data.fragments.length > 0) {
+          const entries = data.fragments.map((frag: any, idx: number) => {
+            // suportar formato antigo (string) e novo (obj: {text, code[]})
+            const fragText = typeof frag === 'string' ? frag : (frag.text || '');
+            const codes: Array<{ code: string; lang?: string }> = Array.isArray(frag?.code) ? frag.code : [];
+            // anexar exemplos de código ao conteúdo, formatados em bloco incluindo linguagem quando disponível
+            const codeSection = codes.length > 0
+              ? '\n\nExemplos de código:\n' + codes.map(c => `\n\n${c.lang ? '```' + c.lang : '```'}\n${c.code}\n\n\`\`\``).join('\n')
+              : '';
+            const combined = (fragText || '') + codeSection;
+            const src = (data.sources && data.sources[idx]) || null;
+            const topicTitle = src ? `${title} — fonte ${new URL(src).host}` : title;
+            // collect language tags
+            const codeLangs = codes.map(c => c.lang).filter(Boolean) as string[];
+            const tags = src ? [new URL(src).host, ...codeLangs] : [...codeLangs];
+            return engine.addKnowledge(topicTitle, combined, tags);
+          });
+          setKnowledgeBase(engine.getKnowledgeBase());
+          setStats(engine.getStats());
+          return { approved: true, entries };
+        }
+
         const entry = engine.addKnowledge(title, summary, []);
         setKnowledgeBase(engine.getKnowledgeBase());
         setStats(engine.getStats());
         return { approved: true, entry };
       } else {
+        // If deep option requested, return the full research data for preview (UI will decide what to import)
+        if (options.deep) {
+          return { approved: false, data };
+        }
+        // For non-deep requests without auto-approve, create a proposal to be reviewed later
         const proposal = engine.createProposal(title, summary, null);
         setProposals(engine.getProposals());
         return { approved: false, proposal };
@@ -217,6 +247,15 @@ export function useAI() {
     }
   }, [engine]);
 
+  const searchKnowledge = useCallback((query: string) => {
+    try {
+      return engine.searchKnowledge(query || '');
+    } catch (err) {
+      console.error('searchKnowledge error', err);
+      return [] as any[];
+    }
+  }, [engine]);
+
   return {
     sessionId,
     currentSession,
@@ -237,6 +276,7 @@ export function useAI() {
     approveProposal,
     rejectProposal,
     researchTopic,
+    searchKnowledge,
   };
 }
 

@@ -161,7 +161,7 @@ class AILearningEngine {
     // Gera resposta
     const answer = this.generateAnswer(question, relevantKnowledge);
     
-    // Calcula confiança baseada na quantidade de conhecimento relevante
+    // (Mantemos campo para histórico, mas não exibiremos confiança na UI)
     const confidence = Math.min(
       100,
       Math.max(20, relevantKnowledge.length * 25)
@@ -193,7 +193,7 @@ class AILearningEngine {
     this.updateAverageConfidence();
     this.saveToStorage();
 
-    // Se aprendizado autônomo está ativado, gerar propostas baseadas em interações fracas
+    // Se aprendizado autônomo está ativado, gerar propostas baseadas em respostas que indiquem falta de conhecimento
     try {
       if (this.isAutonomousLearningEnabled()) {
         this.maybeGenerateProposalFromInteraction(interaction);
@@ -251,7 +251,9 @@ class AILearningEngine {
     // - Se confiança baixa (<=40) ou resposta pedindo para ensinar, sugerir proposta
     const answerIndicatesLack = /desculpe, ainda não tenho conhecimento suficiente|poderia me ensinar|ensine/i;
 
-    if (interaction.confidence <= 40 || answerIndicatesLack.test(interaction.answer)) {
+    // Generate proposal if the answer implies lack of knowledge or the question looks like a troubleshooting/error request
+    const questionIndicatesTrouble = /erro|error|exception|como resolver|como consertar|stacktrace|falha|failed|unhandled/i;
+    if (answerIndicatesLack.test(interaction.answer) || questionIndicatesTrouble.test(interaction.question)) {
       const keywords = this.extractKeywords(interaction.question);
       const topic = keywords.slice(0, 3).join(' ') || interaction.question.substring(0, 50);
       const content = `Proposta gerada automaticamente a partir da interação: pergunta="${interaction.question}" resposta="${interaction.answer}"`;
@@ -353,7 +355,7 @@ class AILearningEngine {
       answer += `\n\nInformações adicionais relacionadas:\n${additionalInfo}`;
     }
 
-    answer += `\n\n(Confiança: ${Math.round((relevantKnowledge.length / 5) * 100)}%)`;
+  // Do not append confidence percentage to the answer (keeps responses focused on content)
 
     return answer;
   }
@@ -390,6 +392,15 @@ class AILearningEngine {
   getAllSessions(): LearningSession[] {
     return Array.from(this.sessions.values())
       .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  /**
+   * Pesquisa rápida na base de conhecimento por uma query livre.
+   * Retorna entradas relevantes ordenadas por score.
+   */
+  searchKnowledge(query: string): KnowledgeEntry[] {
+    const keywords = this.extractKeywords(query);
+    return this.findRelevantKnowledge(keywords);
   }
 
   /**

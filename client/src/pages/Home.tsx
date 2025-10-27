@@ -27,6 +27,7 @@ export default function Home() {
     approveProposal,
     rejectProposal,
     researchTopic,
+    searchKnowledge,
   } = useAI();
 
   const [question, setQuestion] = useState('');
@@ -34,6 +35,11 @@ export default function Home() {
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('');
   const [activeTab, setActiveTab] = useState('chat');
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<any>(null);
+  const [previewSelected, setPreviewSelected] = useState<Record<number, boolean>>({});
+  const [troubleshootInput, setTroubleshootInput] = useState('');
+  const [troubleshootResults, setTroubleshootResults] = useState<any[]>([]);
 
   const handleAddKnowledge = () => {
     if (topic.trim() && content.trim()) {
@@ -48,11 +54,49 @@ export default function Home() {
     }
   };
 
-  const handleAskQuestion = () => {
-    if (question.trim()) {
-      askQuestion(question);
-      setQuestion('');
+  const handleInterpret = async () => {
+    if (!question.trim()) return alert('Escreva ou cole o texto antes de interpretar');
+    // interpretar entrada livre: rodar pesquisa profunda e abrir preview para importação
+    setPreviewOpen(false);
+    setPreviewData(null);
+    try {
+      const res = await researchTopic(question, false, { deep: true });
+      if (res && res.notFound) {
+        alert('Nenhum resultado encontrado na web para esse texto.');
+        return;
+      }
+      if (res && res.data) {
+        setPreviewData(res.data);
+        const sel: Record<number, boolean> = {};
+        (res.data.fragments || []).forEach((_: any, i: number) => sel[i] = true);
+        setPreviewSelected(sel);
+        setPreviewOpen(true);
+      } else if (res && res.proposal) {
+        alert('Proposta criada (revisar em Propostas)');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Erro ao interpretar/pesquisar. Veja o console para mais detalhes.');
     }
+  };
+
+  const handleChatSend = async () => {
+    if (!question.trim()) return;
+    try {
+      // Primeiro: interpretar e tentar aprender automaticamente (auto-approve)
+      await researchTopic(question, true);
+    } catch (err) {
+      console.error('Erro na pesquisa automática:', err);
+      // não interromperemos a geração da resposta local
+    }
+    try {
+      // Em seguida, pergunte/ gere resposta usando a base de conhecimento (atualizada)
+      await askQuestion(question);
+    } catch (err) {
+      console.error('Erro ao gerar resposta:', err);
+      alert('Erro ao gerar resposta. Veja o console para detalhes.');
+    }
+    setQuestion('');
   };
 
   const handleExport = () => {
@@ -116,10 +160,6 @@ export default function Home() {
             <div className="text-3xl font-bold text-green-600">{stats.totalInteractions}</div>
           </Card>
           <Card className="p-4">
-            <div className="text-sm text-gray-600">Confiança Média</div>
-            <div className="text-3xl font-bold text-purple-600">{Math.round(stats.averageConfidence)}%</div>
-          </Card>
-          <Card className="p-4">
             <div className="text-sm text-gray-600">Sessões Ativas</div>
             <div className="text-3xl font-bold text-orange-600">{stats.sessionCount}</div>
           </Card>
@@ -127,14 +167,15 @@ export default function Home() {
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="chat">💬 Chat</TabsTrigger>
+            <TabsList className="grid w-full grid-cols-5">
+            <TabsTrigger value="chat">🧭 Interpretar</TabsTrigger>
             <TabsTrigger value="learn">📚 Ensinar</TabsTrigger>
             <TabsTrigger value="knowledge">🧠 Base de Conhecimento</TabsTrigger>
             <TabsTrigger value="proposals">💡 Propostas</TabsTrigger>
+            <TabsTrigger value="troubleshoot">🛠️ Troubleshoot</TabsTrigger>
           </TabsList>
 
-          {/* Chat Tab */}
+          {/* Chat Tab (mantém interface de conversa, mas envia para interpretação automática antes de gerar resposta) */}
           <TabsContent value="chat" className="space-y-4">
             <Card className="p-6">
               <h2 className="text-xl font-semibold mb-4">Converse com a IA</h2>
@@ -188,11 +229,11 @@ export default function Home() {
                     placeholder="Faça uma pergunta à IA..."
                     value={question}
                     onChange={(e) => setQuestion(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleAskQuestion()}
+                    onKeyPress={(e) => e.key === 'Enter' && handleChatSend()}
                     disabled={isLoading}
                   />
                   <Button
-                    onClick={handleAskQuestion}
+                    onClick={handleChatSend}
                     disabled={isLoading || !question.trim()}
                     className="gap-2"
                   >
@@ -254,6 +295,8 @@ export default function Home() {
                       alert(`Aprendido: ${res.entry.topic}`);
                       setTopic('');
                       setContent('');
+                    } else if (res && res.notFound) {
+                      alert('Nenhum resultado encontrado na web para esse tópico. Tente outro termo.');
                     } else if (res && !res.approved) {
                       alert('Proposta criada (revisar em Propostas)');
                     }
@@ -265,9 +308,132 @@ export default function Home() {
                   <Lightbulb className="w-4 h-4" />
                   Pesquisar e Aprender (web)
                 </Button>
+
+                <Button
+                  onClick={async () => {
+                    if (!topic.trim()) return alert('Informe um tópico para pesquisar');
+                    // deep learning: first fetch results for preview, then let user choose which sources to import
+                    setPreviewOpen(false);
+                    setPreviewData(null);
+                    try {
+                      const res = await researchTopic(topic, false, { deep: true });
+                      if (res && res.notFound) {
+                        alert('Nenhum resultado encontrado na web para esse tópico. Tente outro termo.');
+                        return;
+                      }
+                      if (res && res.data) {
+                        setPreviewData(res.data);
+                        // default: select all sources
+                        const sel: Record<number, boolean> = {};
+                        (res.data.fragments || []).forEach((_: any, i: number) => sel[i] = true);
+                        setPreviewSelected(sel);
+                        setPreviewOpen(true);
+                      } else {
+                        // fallback: if API returned a proposal or other shape
+                        if (res && res.proposal) {
+                          alert('Proposta criada (revisar em Propostas)');
+                        }
+                      }
+                    } catch (err) {
+                      console.error(err);
+                      alert('Erro ao pesquisar. Veja o console para mais detalhes.');
+                    }
+                  }}
+                  disabled={isLoading || !topic.trim()}
+                  className="w-full gap-2 mt-2"
+                  variant="default"
+                >
+                  <Lightbulb className="w-4 h-4" />
+                  Aprender Tudo (web)
+                </Button>
               </div>
             </Card>
           </TabsContent>
+
+          {/* Preview Modal for deep research */}
+          {previewOpen && previewData && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center">
+              <div className="absolute inset-0 bg-black opacity-40" onClick={() => setPreviewOpen(false)} />
+              <div className="bg-white rounded-lg shadow-lg max-w-4xl w-full max-h-[80vh] overflow-auto p-6 z-10">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-semibold">Pré-visualizar fontes — {previewData.topic}</h3>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setPreviewOpen(false)}>Fechar</Button>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  {(previewData.fragments || []).map((frag: any, idx: number) => {
+                    const src = (previewData.sources && previewData.sources[idx]) || null;
+                    const text = typeof frag === 'string' ? frag : (frag.text || '');
+                    const codes: Array<{ code: string; lang?: string }> = Array.isArray(frag?.code) ? frag.code : [];
+                    return (
+                      <div key={idx} className="border rounded p-4">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <div className="text-sm text-gray-600">Fonte: {src ? <a className="text-blue-600" href={src} target="_blank" rel="noreferrer">{src}</a> : 'desconhecida'}</div>
+                            <h4 className="font-medium mt-2">Trecho</h4>
+                          </div>
+                          <div>
+                            <label className="inline-flex items-center">
+                              <input type="checkbox" checked={!!previewSelected[idx]} onChange={(e) => setPreviewSelected(s => ({...s, [idx]: e.target.checked}))} />
+                              <span className="ml-2 text-sm">Importar</span>
+                            </label>
+                          </div>
+                        </div>
+                        <div className="mt-2 text-sm text-gray-800 whitespace-pre-wrap">{text.substring(0, 2000)}</div>
+                        {codes.length > 0 && (
+                          <div className="mt-3">
+                            <h5 className="font-medium">Exemplos de código</h5>
+                            {codes.map((c, i) => (
+                              <div key={i} className="mt-2">
+                                <div className="text-xs text-gray-500">{c.lang || 'código'}</div>
+                                <pre className="bg-gray-100 p-3 rounded mt-1 overflow-auto text-sm"><code>{c.code}</code></pre>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setPreviewOpen(false)}>Cancelar</Button>
+                  <Button onClick={async () => {
+                    // import selected fragments
+                    const frags = previewData.fragments || [];
+                    const sources = previewData.sources || [];
+                    let added = 0;
+                    for (let i = 0; i < frags.length; i++) {
+                      if (!previewSelected[i]) continue;
+                      const frag = frags[i];
+                      const fragText = typeof frag === 'string' ? frag : (frag.text || '');
+                      const codes: Array<{ code: string; lang?: string }> = Array.isArray(frag?.code) ? frag.code : [];
+                      const codeSection = codes.length > 0
+                        ? '\n\nExemplos de código:\n' + codes.map(c => `\n\n${c.lang ? '```' + c.lang : '```'}\n${c.code}\n\n\`\`\``).join('\n')
+                        : '';
+                      const combined = (fragText || '') + codeSection;
+                      const src = sources[i] || null;
+                      const topicTitle = src ? `${previewData.topic} — fonte ${new URL(src).host}` : previewData.topic;
+                      // include language tags when available
+                      const codeLangs = codes.map(c => c.lang).filter(Boolean) as string[];
+                      const tags = src ? [new URL(src).host, ...codeLangs] : [...codeLangs];
+                      try {
+                        addKnowledge(topicTitle, combined, tags);
+                        added++;
+                      } catch (err) {
+                        console.error('erro ao adicionar conhecimento', err);
+                      }
+                    }
+                    setPreviewOpen(false);
+                    setPreviewData(null);
+                    setTopic('');
+                    setContent('');
+                    alert(`Importados ${added} fontes para a base de conhecimento.`);
+                  }}>Importar selecionados</Button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Knowledge Base Tab */}
           <TabsContent value="knowledge" className="space-y-4">
@@ -390,6 +556,73 @@ export default function Home() {
                   ))}
                 </div>
               )}
+            </Card>
+          </TabsContent>
+          {/* Troubleshoot Tab */}
+          <TabsContent value="troubleshoot" className="space-y-4">
+            <Card className="p-6">
+              <h2 className="text-xl font-semibold mb-4">Troubleshoot — Problemas do VS Code</h2>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Cole aqui o erro / log do VS Code</label>
+                  <Textarea
+                    placeholder="Cole a saída do terminal, stacktrace ou mensagem de erro do VS Code..."
+                    value={troubleshootInput}
+                    onChange={(e) => setTroubleshootInput(e.target.value)}
+                    rows={8}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={() => {
+                    if (!troubleshootInput.trim()) return alert('Cole o log antes de pesquisar');
+                    // busca localmente na base de conhecimento
+                    const local = searchKnowledge(troubleshootInput);
+                    setTroubleshootResults(local);
+                    if (local.length === 0) {
+                      alert('Nenhuma solução encontrada localmente. Tente pesquisa web profunda.');
+                    }
+                  }} className="gap-2">Buscar na base local</Button>
+                  <Button variant="outline" onClick={async () => {
+                    if (!troubleshootInput.trim()) return alert('Cole o log antes de pesquisar');
+                    try {
+                      const res = await researchTopic(troubleshootInput, false, { deep: true });
+                      if (res && res.notFound) return alert('Nenhuma informação encontrada na web sobre esse erro');
+                      if (res && res.data) {
+                        // mostrar preview modal reutilizando previewData state
+                        setPreviewData(res.data);
+                        const sel: Record<number, boolean> = {};
+                        (res.data.fragments || []).forEach((_: any, i: number) => sel[i] = true);
+                        setPreviewSelected(sel);
+                        setPreviewOpen(true);
+                      }
+                    } catch (err) {
+                      console.error(err);
+                      alert('Erro ao consultar a web. Veja console.');
+                    }
+                  }}>Pesquisar web (deep)</Button>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-medium">Resultados Locais ({troubleshootResults.length})</h3>
+                  <div className="space-y-3 mt-2">
+                    {troubleshootResults.length === 0 ? (
+                      <div className="text-sm text-gray-500">Sem resultados locais relevantes.</div>
+                    ) : (
+                      troubleshootResults.map((r, idx) => (
+                        <div key={r.id || idx} className="border rounded p-3">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="font-semibold">{r.topic}</div>
+                              <div className="text-sm text-gray-600 mt-1 whitespace-pre-wrap">{r.content.substring(0, 500)}</div>
+                            </div>
+                            <Badge variant="secondary" className="ml-4">{Math.round(r.relevance)}%</Badge>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
             </Card>
           </TabsContent>
         </Tabs>
