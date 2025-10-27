@@ -113,6 +113,11 @@ export function useAI() {
       const summary = data.summary || '';
       const title = data.topic || topic;
 
+      // If nothing was found, return notFound info instead of creating empty knowledge
+      if (!summary || summary.trim() === '' || (data.notFound === true)) {
+        return { approved: false, notFound: true, data };
+      }
+
       if (autoApprove) {
         const entry = engine.addKnowledge(title, summary, []);
         setKnowledgeBase(engine.getKnowledgeBase());
